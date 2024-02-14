@@ -1,0 +1,228 @@
+---
+# Frontend Setup in the a02_web_instance
+- name: Frontend setup
+  hosts: a02_web_instance
+  become: true
+  vars:
+    user: "ubuntu"
+    frontend_file_path: "/home/kaylyn/app_setup/frontend"
+  tasks:
+    # Create /frontend derectory to store index.html
+    - name: Make frontend directory
+      ansible.builtin.file:
+        path: /frontend
+        state: directory
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0755"
+      tags:
+        - frontend
+        - create
+
+    # Copy index.html file from local machine to a02_web_instance
+    - name: Copy the frontend folder to web instance
+      ansible.builtin.copy:
+        src: "{{ frontend_file_path }}/index.html"
+        dest: /frontend/
+        mode: "0755"
+      tags:
+        - frontend
+        - files
+
+    # Install nginx
+    - name: Install nginx
+      ansible.builtin.package:
+        name: nginx
+        state: present
+      tags:
+        - frontend
+        - install
+
+    # Replace default file to direct index.html file
+    - name: Replace /etc/nginx/sites-available/default
+      ansible.builtin.template:
+        src: "{{ frontend_file_path }}/default"
+        dest: /etc/nginx/sites-available/default
+        mode: "0644"
+      notify: Restart Nginx
+      tags:
+        - frontend
+        - files
+
+  # Handler - Restart nginx when default file is changed
+  handlers:
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+      tags:
+        - frontend
+        - service
+
+# Database setup in the a02_db_instance
+- name: Database setup
+  hosts: a02_db_instance
+  become: true
+  gather_facts: false
+  vars:
+    install_dir: /var/www/db
+    app_db_name: "backend"
+    app_db_user: "example"
+    app_db_password: "secure"
+    db_root_password: "root"
+
+  tasks:
+    # Install mysql-server and python3-pymysql
+    - name: Install mysql-server and python3-pymysql
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - mysql-server
+        - python3-pymysql
+      tags:
+        - database
+        - install
+
+    # Configure mysql to listen to private ip
+    - name: Configure mysql to listen to private ip
+      ansible.builtin.lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      tags:
+        - database
+
+    # Start and enable mysql service
+    - name: Start and enable mysql service
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+      tags:
+        - database
+        - service
+
+    # Create a new database with name 'backend'
+    - name: Create a new database with name 'backend'
+      community.mysql.mysql_db:
+        name: "{{ app_db_name }}"
+        state: present
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        login_unix_socket: /run/mysqld/mysqld.sock
+      tags:
+        - database
+
+    # Create database user
+    - name: Create database user
+      community.mysql.mysql_user:
+        name: "{{ app_db_user }}"
+        password: "{{ app_db_password }}"
+        priv: "{{ app_db_name }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ db_root_password }}"
+        check_implicit_admin: true
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      tags:
+        - database
+        - user
+
+# Backend setup in the a02_backend_instance
+- name: Backend setup
+  hosts: a02_backend_instance
+  become: true
+  vars:
+    user: "ubuntu"
+    backend_file_path: "/home/kaylyn/app_setup/backend"
+    requirements_path: "/backend/src/backend/requirements.txt"
+  tasks:
+    # Create /backend/src directory to store backend files
+    - name: Make /backend/src directory
+      ansible.builtin.file:
+        path: "/backend/src"
+        state: directory
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0755"
+      tags:
+        - backend
+        - create
+
+    # Copy backend folder from local machine to the a02_backend_instance
+    - name: Copy the backend folder to backend instance
+      ansible.builtin.copy:
+        src: "{{ backend_file_path }}"
+        dest: "/backend/src/"
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0755"
+      tags:
+        - backend
+        - files
+
+    # Install Python3-pip
+    - name: Install Python3-pip
+      ansible.builtin.package:
+        update_cache: true
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - python3
+        - python3-pip
+        - libmysqlclient-dev
+        - pkg-config
+        - python3-dev
+      tags:
+        - backend
+        - install
+
+    # Install Python packages from requirements.txt
+    - name: Install Python packages from requirements.txt
+      ansible.builtin.pip:
+        requirements: "{{ requirements_path }}"
+        extra_args: "--break-system-packages"
+      tags:
+        - backend
+        - install
+
+    # Get IP address of a02_db_instance
+    - name: Get IP address of a02_db_instance
+      ansible.builtin.set_fact:
+        db_instance_ip: "{{ hostvars[groups['a02_db_instance'][0]]['public_ip_address'] }}"
+      tags:
+        - backend
+        - get_ip
+
+    # Template backend.conf.j2 to backend.conf
+    - name: Template backend.conf.j2 to backend.conf
+      ansible.builtin.template:
+        src: "{{ backend_file_path }}/backend.conf.j2"
+        dest: /backend/src/backend/backend.conf
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: '0644'
+      tags:
+        - backend
+        - files
+
+    # Copy the backend.service file to and systemreload
+    - name: Copy the backend.service file to and systemreload
+      ansible.builtin.copy:
+        src: "{{ backend_file_path }}/backend.service"
+        dest: "/etc/systemd/system/"
+        mode: "0755"
+      notify: Reload systemd
+      tags:
+        - backend
+        - files
+
+  # Handler - when backend.service changed
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      tags:
+        - backend
+        - service
